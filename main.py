@@ -16,9 +16,11 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 chat_id = -1002300709624  # Your chat ID
 
-# PX reference prices
+# Configuration
 PX_REFERENCE_PRICES = [0.3, 0.2]
 START_DATE = datetime(2024, 4, 22)  # Assuming listing was April 22, 2024
+MONTHLY_PHOTO_URL = "https://i.imgur.com/3iVB3L9.jpg"  # Direct link to your Imgur image
+last_monthly_message_date = None
 
 def calculate_percentage_change(current_price, reference_price):
     """Calculate percentage change from reference price"""
@@ -79,6 +81,30 @@ def generate_monthly_message(current_price):
 مشاركتش في المشروع اصلا - 😂
 """
 
+def send_monthly_update(px_price):
+    """Send and pin the monthly message with photo"""
+    global last_monthly_message_date
+    
+    try:
+        # Generate message
+        message = generate_monthly_message(px_price)
+        
+        # Send photo with caption (using direct URL)
+        sent_message = bot.send_photo(
+            chat_id=chat_id,
+            photo=MONTHLY_PHOTO_URL,
+            caption=message
+        )
+        
+        # Pin the message
+        bot.pin_chat_message(chat_id, sent_message.message_id)
+        
+        # Update last sent date
+        last_monthly_message_date = datetime.now(pytz.timezone('Africa/Cairo')).date()
+        
+    except Exception as e:
+        print(f"Error sending monthly update: {e}")
+
 def wait_until_next_15_second():
     """Wait until the next :15 second mark"""
     now = datetime.now(pytz.timezone('Africa/Cairo'))
@@ -125,9 +151,11 @@ def send_price_update():
     
     # Monthly message check (22nd at 2 PM Cairo time)
     now = datetime.now(pytz.timezone('Africa/Cairo'))
-    if now.day == 22 and now.hour == 14 and now.minute == 0:
-        monthly_message = generate_monthly_message(px_price)
-        bot.send_message(chat_id, monthly_message)
+    today = now.date()
+    
+    if (now.day == 22 and now.hour == 14 and now.minute == 0 and 
+        (last_monthly_message_date is None or last_monthly_message_date != today)):
+        send_monthly_update(px_price)
 
 def main():
     # Initial wait to synchronize with :15 second mark
