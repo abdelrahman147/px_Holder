@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Initialize bot with env vars
+# Initialize the bot with environment variables
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -18,7 +18,7 @@ if not BOT_TOKEN or not CHAT_ID:
     raise ValueError("Missing Telegram Bot Token or Chat ID in environment variables")
 
 bot = telebot.TeleBot(BOT_TOKEN)
-chat_id = int(CHAT_ID)
+chat_id = int(CHAT_ID)  # Ensure CHAT_ID is an integer
 
 # Reference prices for $PX
 previous_prices = {
@@ -29,14 +29,15 @@ previous_prices = {
 def calculate_loss_percentage(initial_price, current_price):
     loss = initial_price - current_price
     percentage = (loss / initial_price) * 100
+    # Ensure it shows "-" when the price is lower than the starting price
     return f"-{abs(percentage):.2f}%" if current_price < initial_price else f"+{percentage:.2f}%"
 
 def format_price(price, coin_name):
     if coin_name == "px":
-        return "{:.4f}".format(price)  # Ensures 4 decimal digits (e.g., 0.0710)
+        return "{:.4f}".format(price)  # Forces 4 decimal digits (e.g., 0.0710)
     elif coin_name == "ton":
-        return round(price, 2)  # TON keeps 2 decimal digits
-    return round(price)  # Default rounding
+        return round(price, 2)  # TON remains at 2 decimal digits
+    return round(price)
 
 def get_prices():
     try:
@@ -48,7 +49,7 @@ def get_prices():
             print("Failed to retrieve data")
             return None, None
 
-        # Parse trending coins (optional)
+        # Parse trending coins from homepage
         trending_match = re.search(r'"highlightsData":\{"trendingList":(\[.*?\])', cmc_home.text)
         if trending_match:
             try:
@@ -60,6 +61,8 @@ def get_prices():
                         globals()[name] = float(price)
             except Exception as e:
                 print(f"Error parsing trending list: {e}")
+        else:
+            print("Trending list not found")
 
         # Parse TON price
         ton_match = re.search(r'"statistics":(\{.*?\})', ton_page.text)
@@ -104,7 +107,7 @@ $TON {format_price(ton_price, 'ton')}$
 
 while True:
     now = datetime.now()
-    if now.second == 15:  # Send at XX:XX:15 every minute
+    if now.second == 15:  # Check if current second is 15
         send_price_update()
-        time.sleep(1)  # Prevent duplicate sends
-    time.sleep(0.1)  # Reduce CPU usage
+        time.sleep(1)  # Avoid sending multiple times in the same second
+    time.sleep(0.1)  # Small delay to reduce CPU usage
