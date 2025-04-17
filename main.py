@@ -2,7 +2,7 @@ import os
 import re
 import time
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from dotenv import load_dotenv
 import telebot
@@ -22,14 +22,13 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-# Initialize bot with timeout
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     logger.error("TELEGRAM_BOT_TOKEN environment variable not set!")
     exit(1)
 
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
-chat_id = -1002300709624
+chat_id = -1002300709624  # Replace with your target group/chat ID
 
 # Configuration
 PX_REFERENCE_PRICES = [0.3, 0.2]
@@ -39,69 +38,63 @@ last_monthly_message_date = None
 last_price_update = None
 
 def safe_request(url, max_retries=3):
-    """Safe request with retries and timeout"""
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
     }
     for attempt in range(max_retries):
         try:
-            logger.info(f"Making request to {url} (attempt {attempt + 1})")
+            logger.info(f"Requesting: {url} (attempt {attempt + 1})")
             response = requests.get(url, headers=headers, timeout=15)
             if response.status_code == 200:
-                logger.info("Request successful")
                 return response
-            logger.warning(f"Request failed with status {response.status_code}")
+            logger.warning(f"Status code: {response.status_code}")
         except Exception as e:
-            logger.error(f"Request attempt {attempt + 1} failed: {str(e)}")
+            logger.error(f"Request error: {str(e)}")
         time.sleep(5)
     return None
 
 def send_telegram_message(text, photo_url=None):
-    """Send message to Telegram with error handling"""
     try:
-        logger.info(f"Attempting to send message: {text[:50]}...")
+        logger.info("Sending Telegram message...")
         if photo_url:
-            response = safe_request(photo_url)
-            if response:
-                sent_msg = bot.send_photo(chat_id, response.content, caption=text)
-                logger.info("Photo message sent successfully")
-                return sent_msg
+            photo_resp = safe_request(photo_url)
+            if photo_resp:
+                msg = bot.send_photo(chat_id, photo_resp.content, caption=text)
+                logger.info("Photo message sent")
+                return msg
         else:
-            sent_msg = bot.send_message(chat_id, text, parse_mode="Markdown")
-            logger.info("Text message sent successfully")
-            return sent_msg
+            msg = bot.send_message(chat_id, text, parse_mode="Markdown")
+            logger.info("Text message sent")
+            return msg
     except Exception as e:
-        logger.error(f"Failed to send Telegram message: {str(e)}")
+        logger.error(f"Telegram error: {str(e)}")
     return None
 
 def get_coin_prices():
-    """Get current coin prices with robust error handling"""
     logger.info("Fetching coin prices...")
     try:
         px_data = safe_request("https://coinmarketcap.com/currencies/not-pixel/")
         ton_data = safe_request("https://coinmarketcap.com/currencies/toncoin/")
         
         if not px_data or not ton_data:
-            logger.warning("Failed to fetch one or both coin prices")
+            logger.warning("Missing data from CoinMarketCap")
             return None, None
         
-        px_match = re.search(r'"price":"([\d.]+)"', px_data.text)
-        ton_match = re.search(r'"price":"([\d.]+)"', ton_data.text)
+        # Improved regex to extract prices (handles commas)
+        px_match = re.search(r'"price"\s*:\s*"([\d,\.]+)"', px_data.text)
+        ton_match = re.search(r'"price"\s*:\s*"([\d,\.]+)"', ton_data.text)
+
+        px_price = float(px_match.group(1).replace(',', '')) if px_match else None
+        ton_price = float(ton_match.group(1).replace(',', '')) if ton_match else None
         
-        px_price = float(px_match.group(1)) if px_match else None
-        ton_price = float(ton_match.group(1)) if ton_match else None
-        
-        logger.info(f"Fetched prices - PX: {px_price}, TON: {ton_price}")
+        logger.info(f"Prices -> PX: {px_price}, TON: {ton_price}")
         return px_price, ton_price
-        
     except Exception as e:
-        logger.error(f"Error in get_coin_prices: {str(e)}")
+        logger.error(f"Price fetch error: {str(e)}")
         return None, None
 
 def send_price_update():
-    """Send regular price update"""
     global last_price_update
-    
     px_price, ton_price = get_coin_prices()
     if px_price is None or ton_price is None:
         logger.warning("Skipping price update due to missing data")
@@ -116,19 +109,17 @@ def send_price_update():
     if message != last_price_update:
         if send_telegram_message(message):
             last_price_update = message
-            logger.info("Price update sent successfully")
+            logger.info("Price update sent")
         else:
             logger.error("Failed to send price update")
 
 def send_monthly_update():
-    """Send monthly update with photo"""
     global last_monthly_message_date
     
     now = datetime.now(pytz.timezone('Africa/Cairo'))
     px_price, _ = get_coin_prices()
-    
     if px_price is None:
-        logger.error("Cannot send monthly update without PX price")
+        logger.error("Missing PX price for monthly update")
         return
     
     months = (now.year - START_DATE.year) * 12 + (now.month - START_DATE.month)
@@ -152,48 +143,50 @@ def send_monthly_update():
 اه خلينا نشوف اخره ساشا اي - ❤️
 مشاركتش في المشروع اصلا - 😂
 """
-    
     sent_msg = send_telegram_message(message, MONTHLY_PHOTO_URL)
     if sent_msg:
         try:
+            # Optional: unpin previous message (prevent clutter)
+            try:
+                pinned = bot.get_chat(chat_id).pinned_message
+                if pinned:
+                    bot.unpin_chat_message(chat_id, pinned.message_id)
+                    logger.info("Unpinned previous message")
+            except Exception as e:
+                logger.warning(f"Unpin failed: {str(e)}")
+
             bot.pin_chat_message(chat_id, sent_msg.message_id)
             last_monthly_message_date = now.date()
-            logger.info("Monthly update sent and pinned successfully")
+            logger.info("Monthly message pinned")
         except Exception as e:
-            logger.error(f"Failed to pin message: {str(e)}")
+            logger.error(f"Pinning error: {str(e)}")
 
 def main():
-    logger.info("Starting Telegram price bot...")
-    
-    # Initial connection test
+    logger.info("Starting price bot...")
     try:
         bot.get_me()
-        logger.info("Bot connected successfully")
+        logger.info("Bot is connected to Telegram")
     except Exception as e:
-        logger.error(f"Failed to connect to Telegram: {str(e)}")
+        logger.error(f"Connection error: {str(e)}")
         return
     
     while True:
         try:
             now = datetime.now(pytz.timezone('Africa/Cairo'))
-            logger.info(f"Current Cairo time: {now}")
-            
-            # Check if it's time for monthly update
+            logger.info(f"Cairo time: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+
+            # Monthly update on 22nd @ 14:00
             if (now.day == 22 and now.hour == 14 and now.minute == 0 and 
                 (last_monthly_message_date is None or last_monthly_message_date != now.date())):
-                logger.info("Time for monthly update")
                 send_monthly_update()
             
-            # Regular price updates at :15 of each minute
+            # Price update at every minute when second == 15
             if now.second == 15:
-                logger.info("Time for regular price update")
                 send_price_update()
             
-            # Sleep until next second
             time.sleep(1)
-            
         except Exception as e:
-            logger.error(f"Error in main loop: {str(e)}")
+            logger.error(f"Main loop error: {str(e)}")
             time.sleep(60)
 
 if __name__ == "__main__":
