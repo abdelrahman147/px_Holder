@@ -1,6 +1,5 @@
 import os
 import re
-import json
 import time
 import requests
 from datetime import datetime, timedelta
@@ -11,68 +10,77 @@ import telebot
 # Load environment variables
 load_dotenv()
 
-# Initialize bot
+# Initialize bot with retry logic
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-bot = telebot.TeleBot(BOT_TOKEN)
-chat_id = -1002300709624  # Your chat ID
+bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
+chat_id = -1002300709624
 
 # Configuration
 PX_REFERENCE_PRICES = [0.3, 0.2]
-START_DATE = datetime(2024, 4, 22)  # Assuming listing was April 22, 2024
-MONTHLY_PHOTO_URL = "https://i.imgur.com/3iVB3L9.jpg"  # Direct link to your Imgur image
+START_DATE = datetime(2024, 4, 22, tzinfo=pytz.timezone('Africa/Cairo'))
+MONTHLY_PHOTO_URL = "https://i.imgur.com/3iVB3L9.jpg"  # Direct Imgur link
 last_monthly_message_date = None
+last_price_update = None
 
-def calculate_percentage_change(current_price, reference_price):
-    """Calculate percentage change from reference price"""
-    return ((current_price - reference_price) / reference_price) * 100
+def safe_request(url, max_retries=3):
+    """Safe request with retries and timeout"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            if response.status_code == 200:
+                return response
+        except Exception as e:
+            print(f"Request attempt {attempt + 1} failed: {e}")
+            time.sleep(5)
+    return None
 
-def format_px_message(current_price):
-    """Generate formatted message for PX with reference comparisons"""
-    message = f"$PX {current_price:.4f}$\n"
-    for ref_price in PX_REFERENCE_PRICES:
-        percentage = calculate_percentage_change(current_price, ref_price)
-        message += f"From {ref_price}$ = {percentage:+.2f}%\n"
-    return message
+def calculate_percentage_change(current, reference):
+    """Safe percentage calculation"""
+    try:
+        return ((current - reference) / reference) * 100
+    except:
+        return 0
 
-def format_ton_message(current_price):
-    """Generate simple message for TON"""
-    return f"$TON {current_price:.2f}$"
+def format_px_message(price):
+    """Formatted PX message with error handling"""
+    try:
+        message = f"$PX {price:.4f}$\n"
+        for ref in PX_REFERENCE_PRICES:
+            message += f"From {ref}$ = {calculate_percentage_change(price, ref):+.2f}%\n"
+        return message
+    except:
+        return "$PX Price Unavailable\n"
+
+def format_ton_message(price):
+    """Simple TON message"""
+    try:
+        return f"$TON {price:.2f}$"
+    except:
+        return "$TON Price Unavailable"
 
 def get_months_since_listing():
-    """Calculate months since listing date in Arabic"""
+    """Arabic month count with timezone awareness"""
     now = datetime.now(pytz.timezone('Africa/Cairo'))
-    delta = now - START_DATE
-    months = delta.days // 30 + 1
-    
+    months = (now.year - START_DATE.year) * 12 + (now.month - START_DATE.month)
     arabic_numbers = {
-        1: "الشهر الأول",
-        2: "الشهر الثاني",
-        3: "الشهر الثالث",
-        4: "الشهر الرابع",
-        5: "الشهر الخامس",
-        6: "الشهر السادس",
-        7: "الشهر السابع",
-        8: "الشهر الثامن",
-        9: "الشهر التاسع",
+        1: "الشهر الأول", 2: "الشهر الثاني", 3: "الشهر الثالث",
+        4: "الشهر الرابع", 5: "الشهر الخامس", 6: "الشهر السادس",
+        7: "الشهر السابع", 8: "الشهر الثامن", 9: "الشهر التاسع",
         10: "الشهر العاشر"
     }
-    
-    return arabic_numbers.get(months, f"{months} أشهر")
+    return arabic_numbers.get(months + 1, f"{months + 1} أشهر")
 
-def generate_monthly_message(current_price):
-    """Generate the monthly status message"""
+def generate_monthly_message(price):
+    """Monthly message in Arabic with recovery status"""
     months_text = get_months_since_listing()
-    initial_price = PX_REFERENCE_PRICES[0]
-    current_percentage = calculate_percentage_change(current_price, initial_price)
-    
-    if current_price >= initial_price:
-        recovery_text = "أخيراً رجعنا الخساره 😍"
-    else:
-        recovery_text = "ولسا للأسف مرجعناش الخساره 😢"
+    recovery = "أخيراً رجعنا الخساره 😍" if price >= PX_REFERENCE_PRICES[0] else "ولسا للأسف مرجعناش الخساره 😢"
     
     return f"""
 اه صحيح مبروك يا شباب بقالنا {months_text} من ادراج بكسل
-{recovery_text}
+{recovery}
 
 هل لسا عامل هولد ل $PX ؟
 
@@ -81,93 +89,99 @@ def generate_monthly_message(current_price):
 مشاركتش في المشروع اصلا - 😂
 """
 
+def send_with_retry(func, *args, max_retries=3, **kwargs):
+    """Retry mechanism for Telegram operations"""
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            print(f"Telegram operation failed (attempt {attempt + 1}): {e}")
+            time.sleep(5)
+    return None
+
 def send_monthly_update(px_price):
-    """Send and pin the monthly message with photo"""
+    """Send and pin monthly update with photo"""
     global last_monthly_message_date
     
     try:
-        # Generate message
-        message = generate_monthly_message(px_price)
+        # Download photo first to ensure it's available
+        photo_data = safe_request(MONTHLY_PHOTO_URL)
+        if not photo_data:
+            raise Exception("Failed to download photo")
         
-        # Send photo with caption (using direct URL)
-        sent_message = bot.send_photo(
+        message = generate_monthly_message(px_price)
+        sent_msg = send_with_retry(
+            bot.send_photo,
             chat_id=chat_id,
-            photo=MONTHLY_PHOTO_URL,
+            photo=photo_data.content,
             caption=message
         )
         
-        # Pin the message
-        bot.pin_chat_message(chat_id, sent_message.message_id)
-        
-        # Update last sent date
-        last_monthly_message_date = datetime.now(pytz.timezone('Africa/Cairo')).date()
-        
+        if sent_msg:
+            send_with_retry(bot.pin_chat_message, chat_id, sent_msg.message_id)
+            last_monthly_message_date = datetime.now(pytz.timezone('Africa/Cairo')).date()
     except Exception as e:
-        print(f"Error sending monthly update: {e}")
-
-def wait_until_next_15_second():
-    """Wait until the next :15 second mark"""
-    now = datetime.now(pytz.timezone('Africa/Cairo'))
-    next_run = now.replace(second=15)
-    if now.second >= 15:
-        next_run += timedelta(minutes=1)
-    wait_seconds = (next_run - now).total_seconds()
-    if wait_seconds > 0:
-        time.sleep(wait_seconds)
+        print(f"Monthly update failed: {e}")
 
 def get_coin_prices():
-    """Fetch and parse coin prices from CoinMarketCap"""
+    """Get PX and TON prices with robust parsing"""
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        px = requests.get("https://coinmarketcap.com/currencies/not-pixel/", headers=headers, timeout=10)
-        ton = requests.get("https://coinmarketcap.com/currencies/toncoin/", headers=headers, timeout=10)
+        px_data = safe_request("https://coinmarketcap.com/currencies/not-pixel/")
+        ton_data = safe_request("https://coinmarketcap.com/currencies/toncoin/")
         
-        if px.status_code != 200 or ton.status_code != 200:
-            raise Exception("Failed to fetch data")
-            
-        px_match = re.search(r'"price":"(\d+\.\d+)"', px.text)
-        px_price = float(px_match.group(1)) if px_match else None
+        if not px_data or not ton_data:
+            return None, None
         
-        ton_match = re.search(r'"price":"(\d+\.\d+)"', ton.text)
-        ton_price = float(ton_match.group(1)) if ton_match else None
+        # More reliable price extraction
+        px_price = re.search(r'"price":"([\d.]+)"', px_data.text)
+        ton_price = re.search(r'"price":"([\d.]+)"', ton_data.text)
         
-        return px_price, ton_price
-        
+        return (
+            float(px_price.group(1)) if px_price else None,
+            float(ton_price.group(1)) if ton_price else None
+        )
     except Exception as e:
-        print(f"Error fetching prices: {e}")
+        print(f"Price fetch error: {e}")
         return None, None
 
-def send_price_update():
-    """Send formatted price update to Telegram"""
-    px_price, ton_price = get_coin_prices()
-    if px_price is None or ton_price is None:
-        return
+def synchronized_send():
+    """Main send logic with timing synchronization"""
+    global last_price_update
     
-    # Regular price message
-    message = format_px_message(px_price) + "\n" + format_ton_message(ton_price)
-    bot.send_message(chat_id, message, parse_mode="Markdown")
-    
-    # Monthly message check (22nd at 2 PM Cairo time)
     now = datetime.now(pytz.timezone('Africa/Cairo'))
-    today = now.date()
+    px_price, ton_price = get_coin_prices()
     
+    # Regular price update
+    if px_price and ton_price:
+        message = format_px_message(px_price) + "\n" + format_ton_message(ton_price)
+        if message != last_price_update:
+            send_with_retry(bot.send_message, chat_id, message, parse_mode="Markdown")
+            last_price_update = message
+    
+    # Monthly update check
     if (now.day == 22 and now.hour == 14 and now.minute == 0 and 
-        (last_monthly_message_date is None or last_monthly_message_date != today)):
-        send_monthly_update(px_price)
+        (not last_monthly_message_date or last_monthly_message_date != now.date())):
+        if px_price:
+            send_monthly_update(px_price)
 
 def main():
-    # Initial wait to synchronize with :15 second mark
-    wait_until_next_15_second()
-    
+    """Main loop with precise timing"""
     while True:
         try:
-            send_price_update()
-            # Wait until next :15 mark (approximately 60 seconds from now)
-            time.sleep(60 - (datetime.now().second % 60) + 15)
+            # Calculate sleep time to align with :15 second mark
+            now = datetime.now(pytz.timezone('Africa/Cairo'))
+            next_run = now.replace(second=15, microsecond=0)
+            if now >= next_run:
+                next_run += timedelta(minutes=1)
+            
+            sleep_time = (next_run - now).total_seconds()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            
+            synchronized_send()
+            
         except Exception as e:
-            print(f"Error in main loop: {e}")
+            print(f"Main loop error: {e}")
             time.sleep(60)
 
 if __name__ == "__main__":
