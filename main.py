@@ -14,7 +14,7 @@ load_dotenv()
 # Get bot token from environment variable
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
-chat_id = -1002300709624
+chat_id = -1002300709624 
 previous_price = 0.3
 
 # Track the month count for the congratulatory message
