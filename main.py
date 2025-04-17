@@ -3,7 +3,7 @@ import re
 import json
 import time
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from dotenv import load_dotenv
 import telebot
@@ -11,162 +11,133 @@ import telebot
 # Load environment variables
 load_dotenv()
 
-# Initialize bot with token from environment variables
+# Initialize bot
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 chat_id = -1002300709624  # Your chat ID
-previous_price = 0.3  # Initial price reference
 
-# Track monthly message status
-last_monthly_message_sent = None
+# PX reference prices
+PX_REFERENCE_PRICES = [0.3, 0.2]
+START_DATE = datetime(2024, 4, 22)  # Assuming listing was April 22, 2024
 
-def calculate_loss_percentage(initial_price, current_price):
-    """Calculate percentage loss from initial price"""
-    loss = initial_price - current_price
-    return (loss / initial_price) * 100
+def calculate_percentage_change(current_price, reference_price):
+    """Calculate percentage change from reference price"""
+    return ((current_price - reference_price) / reference_price) * 100
 
-def format_price(price, coin_name):
-    """Format price based on coin type"""
-    if coin_name == "px":
-        return round(price, 4)
-    elif coin_name == "ton":
-        return round(price, 2)
-    return int(price)
+def format_px_message(current_price):
+    """Generate formatted message for PX with reference comparisons"""
+    message = f"$PX {current_price:.4f}$\n"
+    for ref_price in PX_REFERENCE_PRICES:
+        percentage = calculate_percentage_change(current_price, ref_price)
+        message += f"From {ref_price}$ = {percentage:+.2f}%\n"
+    return message
 
-def get_monthly_message_data():
-    """Generate monthly message text in Arabic"""
+def format_ton_message(current_price):
+    """Generate simple message for TON"""
+    return f"$TON {current_price:.2f}$"
+
+def get_months_since_listing():
+    """Calculate months since listing date in Arabic"""
+    now = datetime.now(pytz.timezone('Africa/Cairo'))
+    delta = now - START_DATE
+    months = delta.days // 30 + 1
+    
     arabic_numbers = {
-        1: "الأول",
-        2: "الثاني", 
-        3: "الثالث",
-        4: "الرابع",
-        5: "الخامس",
-        6: "السادس",
-        7: "السابع",
-        8: "الثامن",
-        9: "التاسع",
-        10: "العاشر"
+        1: "الشهر الأول",
+        2: "الشهر الثاني",
+        3: "الشهر الثالث",
+        4: "الشهر الرابع",
+        5: "الشهر الخامس",
+        6: "الشهر السادس",
+        7: "الشهر السابع",
+        8: "الشهر الثامن",
+        9: "الشهر التاسع",
+        10: "الشهر العاشر"
     }
     
-    now = datetime.now(pytz.timezone('Africa/Cairo'))
-    months_since_start = (now.year - 2024) * 12 + now.month - 4  # Starting from April 2024
-    month_text = arabic_numbers.get(months_since_start, str(months_since_start))
-    
-    return month_text
+    return arabic_numbers.get(months, f"{months} أشهر")
 
-def check_and_send_monthly_message(current_price):
-    """Check if monthly message should be sent"""
-    global last_monthly_message_sent
+def generate_monthly_message(current_price):
+    """Generate the monthly status message"""
+    months_text = get_months_since_listing()
+    initial_price = PX_REFERENCE_PRICES[0]
+    current_percentage = calculate_percentage_change(current_price, initial_price)
     
-    now = datetime.now(pytz.timezone('Africa/Cairo'))
-    today = now.date()
+    if current_price >= initial_price:
+        recovery_text = "أخيراً رجعنا الخساره 😍"
+    else:
+        recovery_text = "ولسا للأسف مرجعناش الخساره 😢"
     
-    # Check if it's the 22nd between 2:00-2:01 PM Cairo time
-    if (now.day == 22 and 
-        now.hour == 14 and 
-        now.minute == 0 and
-        (last_monthly_message_sent != today)):
-        
-        loss_percentage = calculate_loss_percentage(previous_price, current_price)
-        month_text = get_monthly_message_data()
-        
-        message = f"""
-مبروك يا شباب بقالكم عاملين هولد لبكسل {month_text} والان علي خساره {loss_percentage:.2f}%
+    return f"""
+اه صحيح مبروك يا شباب بقالنا {months_text} من ادراج بكسل
+{recovery_text}
+
+هل لسا عامل هولد ل $PX ؟
+
+لا يعم مشروع تعبان في دماغه - 🔥
+اه خلينا نشوف اخره ساشا اي - ❤️
+مشاركتش في المشروع اصلا - 😂
 """
-        bot.send_message(chat_id, message)
-        last_monthly_message_sent = today
 
-def fetch_coin_data():
-    """Fetch data from CoinMarketCap"""
+def wait_until_next_15_second():
+    """Wait until the next :15 second mark"""
+    now = datetime.now(pytz.timezone('Africa/Cairo'))
+    next_run = now.replace(second=15)
+    if now.second >= 15:
+        next_run += timedelta(minutes=1)
+    wait_seconds = (next_run - now).total_seconds()
+    if wait_seconds > 0:
+        time.sleep(wait_seconds)
+
+def get_coin_prices():
+    """Fetch and parse coin prices from CoinMarketCap"""
     try:
-        s = requests.get("https://coinmarketcap.com/", timeout=10)
-        px = requests.get("https://coinmarketcap.com/currencies/not-pixel/", timeout=10)
-        ton = requests.get("https://coinmarketcap.com/currencies/toncoin/", timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        px = requests.get("https://coinmarketcap.com/currencies/not-pixel/", headers=headers, timeout=10)
+        ton = requests.get("https://coinmarketcap.com/currencies/toncoin/", headers=headers, timeout=10)
         
-        if s.status_code != 200 or px.status_code != 200 or ton.status_code != 200:
-            raise Exception("Failed to fetch data from CoinMarketCap")
+        if px.status_code != 200 or ton.status_code != 200:
+            raise Exception("Failed to fetch data")
             
-        return s.text, px.text, ton.text
+        px_match = re.search(r'"price":"(\d+\.\d+)"', px.text)
+        px_price = float(px_match.group(1)) if px_match else None
+        
+        ton_match = re.search(r'"price":"(\d+\.\d+)"', ton.text)
+        ton_price = float(ton_match.group(1)) if ton_match else None
+        
+        return px_price, ton_price
         
     except Exception as e:
-        print(f"Error fetching data: {e}")
-        return None, None, None
+        print(f"Error fetching prices: {e}")
+        return None, None
 
-def parse_coin_data(data, cd, cd2):
-    """Parse the HTML data to extract coin prices"""
-    coins = {}
+def send_price_update():
+    """Send formatted price update to Telegram"""
+    px_price, ton_price = get_coin_prices()
+    if px_price is None or ton_price is None:
+        return
     
-    # Parse trending coins
-    match = re.search(r'"highlightsData":\{"trendingList":(\[.*?\])', data)
-    if match:
-        try:
-            trending_list = json.loads(match.group(1))
-            for coin in trending_list:
-                name = coin.get("name", "").replace(" ", "_").lower()
-                price = coin.get("priceChange", {}).get("price", 0)
-                coins[name] = price
-        except json.JSONDecodeError:
-            print("Error parsing trending list")
-
-    # Parse TON coin
-    match = re.search(r'"statistics":(\{.*?\})', cd2)
-    if match:
-        try:
-            stats = json.loads(match.group(1))
-            coins['toncoin'] = stats.get("price", 0)
-        except json.JSONDecodeError:
-            print("Error parsing TON stats")
-
-    # Parse PIXEL coin
-    match = re.search(r'"statistics":(\{.*?\})', cd)
-    if match:
-        try:
-            stats = json.loads(match.group(1))
-            coins['not_pixel'] = stats.get("price", 0)
-        except json.JSONDecodeError:
-            print("Error parsing PIXEL stats")
-
-    return coins
+    # Regular price message
+    message = format_px_message(px_price) + "\n" + format_ton_message(ton_price)
+    bot.send_message(chat_id, message, parse_mode="Markdown")
+    
+    # Monthly message check (22nd at 2 PM Cairo time)
+    now = datetime.now(pytz.timezone('Africa/Cairo'))
+    if now.day == 22 and now.hour == 14 and now.minute == 0:
+        monthly_message = generate_monthly_message(px_price)
+        bot.send_message(chat_id, monthly_message)
 
 def main():
+    # Initial wait to synchronize with :15 second mark
+    wait_until_next_15_second()
+    
     while True:
         try:
-            # Get current Cairo time
-            now = datetime.now(pytz.timezone('Africa/Cairo'))
-            
-            # Fetch and parse data
-            data, px_data, ton_data = fetch_coin_data()
-            if not all([data, px_data, ton_data]):
-                time.sleep(60)
-                continue
-                
-            coins = parse_coin_data(data, px_data, ton_data)
-            
-            # Prepare and send message
-            if 'not_pixel' in coins and 'toncoin' in coins:
-                px_price = float(coins['not_pixel'])
-                ton_price = float(coins['toncoin'])
-                
-                loss_percentage = calculate_loss_percentage(previous_price, px_price)
-                
-                # Format prices
-                formatted_px = format_price(px_price, "px")
-                formatted_ton = format_price(ton_price, "ton")
-                
-                # Send regular update
-                message = f"""
-$PX {formatted_px}$  |  -{loss_percentage:.2f}%
-
-$TON {formatted_ton}$ 
-"""
-                bot.send_message(chat_id, message, parse_mode="Markdown")
-                
-                # Check for monthly message
-                check_and_send_monthly_message(px_price)
-            
-            # Sleep for 1 minute before next check
-            time.sleep(60)
-            
+            send_price_update()
+            # Wait until next :15 mark (approximately 60 seconds from now)
+            time.sleep(60 - (datetime.now().second % 60) + 15)
         except Exception as e:
             print(f"Error in main loop: {e}")
             time.sleep(60)
